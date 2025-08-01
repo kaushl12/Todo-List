@@ -19,6 +19,12 @@ app.use(express.urlencoded({ extended: true, limit: "16kb" }));
 app.use(express.static("public"));
 app.use(cookieParser());
 
+import userRouter from './routes/user.routes.js'
+import todoRouter from './routes/todo.routes.js'
+app.use("/api/v1/users", userRouter);
+app.use("/api/v1/todos", todoRouter);
+
+
 app.use((err, req, res, next) => {
     res.status(err.statusCode || 500).json({
     success: false,
