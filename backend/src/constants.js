@@ -1,1 +1,1 @@
-export const DB_NAME="todolist"
+export const DB_NAME="MERN-TodoList"
