@@ -4,7 +4,6 @@ import { asyncHandler } from "../utils/asyncHandlers.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import { ApiError } from "../utils/ApiError.js";
 import { User } from "../models/user.model.js";
-import jwt from "jsonwebtoken";
 import { z } from "zod";
 
 const registerSchema = z.object({
@@ -50,7 +49,7 @@ const cookieOptions = {
 };
 
 /* Token generator */
-const generateRefreshAndAccessToken = async (user) => {
+const  generateRefreshAndAccessToken = async (user) => {
   try {
     const accessToken = user.generateAccessToken();
     const refreshToken = user.generateRefreshToken();
@@ -86,7 +85,7 @@ const register = asyncHandler(async (req, res) => {
   }
 
   const newUser = await User.create({
-    email,
+    email, 
     username: username.toLowerCase(),
     password,
   });
@@ -118,7 +117,7 @@ const login = asyncHandler(async (req, res) => {
 
   const user = await User.findOne({ email });
 
-  // 👇 Combine both checks to prevent leaking user info
+ 
   if (!user || !(await user.isPasswordCorrect(password))) {
     throw new ApiError(401, [], "Invalid email or password");
   }
