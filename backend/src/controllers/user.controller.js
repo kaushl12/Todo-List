@@ -4,7 +4,7 @@ import { asyncHandler } from "../utils/asyncHandlers.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import { ApiError } from "../utils/ApiError.js";
 import { User } from "../models/user.model.js";
-import { z } from "zod";
+import { jwt, z } from "zod";
 
 const registerSchema = z.object({
   username: z
@@ -49,7 +49,7 @@ const cookieOptions = {
 };
 
 /* Token generator */
-const  generateRefreshAndAccessToken = async (user) => {
+const generateRefreshAndAccessToken = async (user) => {
   try {
     const accessToken = user.generateAccessToken();
     const refreshToken = user.generateRefreshToken();
@@ -85,7 +85,7 @@ const register = asyncHandler(async (req, res) => {
   }
 
   const newUser = await User.create({
-    email, 
+    email,
     username: username.toLowerCase(),
     password,
   });
@@ -117,12 +117,13 @@ const login = asyncHandler(async (req, res) => {
 
   const user = await User.findOne({ email });
 
- 
   if (!user || !(await user.isPasswordCorrect(password))) {
     throw new ApiError(401, [], "Invalid email or password");
   }
 
-  const { accessToken, refreshToken } = await generateRefreshAndAccessToken(user);
+  const { accessToken, refreshToken } = await generateRefreshAndAccessToken(
+    user
+  );
 
   const userData = await User.findById(user._id)
     .select("-password -refreshToken")
@@ -140,19 +141,55 @@ const login = asyncHandler(async (req, res) => {
       )
     );
 });
-  
 
 /* UPDATE PROFILE */
 const updateProfile = asyncHandler(async (req, res) => {
-  res.send("updateProfile route under construction");
+  // will update fullName Avatar
+});
+const passwordSchema = z.object({
+  oldPassword: z.string(),
+
+  newPassword: z
+    .string()
+    .min(6, "New password must be at least 6 characters")
+    .max(100, "New password must be at most 100 characters")
+    .regex(/[0-9]/, "New password must contain at least one digit")
+    .regex(/[A-Z]/, "New password must contain at least one uppercase letter")
+    .regex(
+      /[$&+,:;=?@#|'<>.^*()%!-]/,
+      "New password must contain at least one special character"
+    ),
+});
+const changePassword = asyncHandler(async (req, res) => {
+  const validatedPassword=passwordSchema.safeParse(req.body)
+  if(!validatedPassword.success){
+    return res.status(400).json({
+      message: "Invalid password format",
+      error: validatedPassword.error.issues,
+    })
+  }
+
+  const {oldPassword, newPassword}=validatedPassword.data
+
+  const user=await User.findById(req.user?._id)
+  if(!user){
+    throw new ApiError(404,"User not found")
+  }
+  const isPasswordCorrect=await user.isPasswordCorrect(oldPassword);
+  if(!oldPassword){
+    throw new ApiError(400,"Old password is incorrect")
+  }
+
+  user.password=newPassword;
+  await user.save({validateBeforeSave:false})
+
+  return res.status(200)
+  .json( new ApiResponse(200,{},"Password changed successfully"
+  ))
 });
 
+const logout = asyncHandler(async (req, res) => {
 
-const logout=asyncHandler(async(req,res)=>{
-  console.log("hi");
-  
-  console.log("user",req.user._id);
-  
   await User.findByIdAndUpdate(req.user._id, {
     $unset: { refreshToken: 1 },
   });
@@ -167,6 +204,46 @@ const logout=asyncHandler(async(req,res)=>{
     .clearCookie("accessToken", options)
     .clearCookie("refreshToken", options)
     .json(new ApiResponse(200, {}, "User Logged Out"));
+});
+
+
+const refreshAccessToken=asyncHandler(async(req,res)=>{
+try {
+    const incomingRefreshToken=req.cookies.refreshToken || req.body.refreshToken;
+    if(!incomingRefreshToken){
+      throw new ApiError(401,"Unauthorized Access")
+    }
+  
+    const decodedToken=await jwt.verify(
+      incomingRefreshToken,
+      process.env.REFRESH_TOKEN_SECRET
+    )
+  
+    const user=await User.findById(decodedToken?._id);
+    if(!user){
+        throw new ApiError(401, "Invalid Refresh Token");
+    }
+    if(incomingRefreshToken !== user?.refreshToken){
+      throw new ApiError(401,"Refresh Token is expired")
+    }
+
+    const {accessToken,refreshToken}=
+    await generateRefreshAndAccessToken(user._id);
+    return res
+    .status(200)
+    .cookie("accessToken",accessToken,cookieOptions)
+    .cookie("refreshToken",refreshToken,cookieOptions)
+    .json(
+        new ApiResponse(
+          200,
+          { accessToken, refreshToken: refreshToken },
+          "Access Token Refreshed"
+        )
+      );
+} catch (error) {
+throw new ApiError(401, "Invalid or expired refresh token");
+
+}
 })
 
-export { register, login, updateProfile,logout };
+export { register, login, updateProfile, logout,changePassword,refreshAccessToken };
