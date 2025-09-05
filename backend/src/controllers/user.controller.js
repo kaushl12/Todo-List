@@ -4,7 +4,10 @@ import { asyncHandler } from "../utils/asyncHandlers.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import { ApiError } from "../utils/ApiError.js";
 import { User } from "../models/user.model.js";
-import { jwt, z } from "zod";
+import {  z } from "zod";
+import jwt from "jsonwebtoken";
+import { uploadOnCloudinary } from "../utils/cloudinary.js";
+
 
 const registerSchema = z.object({
   username: z
@@ -35,12 +38,24 @@ const registerSchema = z.object({
       /[$&+,:;=?@#|'<>.^*()%!-]/,
       "Must contain at least one special character"
     ),
+  fullName: z
+    .string()
+    .trim()
+    .min(4)
+    .max(30)
+    .regex(/^[a-zA-Z\s]+$/, "Fullname must only contain letters and spaces"),
 });
 
 const loginSchema = z.object({
   email: registerSchema.shape.email,
   password: registerSchema.shape.password,
 });
+const updateSchema = z.object({
+  email: registerSchema.shape.email.optional(),
+  fullName: registerSchema.shape.fullName.optional(),
+  username: registerSchema.shape.username.optional(),
+});
+
 
 const cookieOptions = {
   httpOnly: true,
@@ -74,20 +89,34 @@ const register = asyncHandler(async (req, res) => {
     });
   }
 
-  const { email, username, password } = validated.data;
+  const { email, username, password, fullName } = validated.data;
 
   const existedUser = await User.findOne({
     $or: [{ email }, { username: username.toLowerCase() }],
   });
-
   if (existedUser) {
     throw new ApiError(409, "User with email or username already exists");
   }
 
+  const avatarLocalPath = req.file?.path;
+
+  if (!avatarLocalPath) {
+    throw new ApiError(400, "Avatar file is required");
+  }
+  const avatar = await uploadOnCloudinary(avatarLocalPath);
+
+  if (!avatar || !avatar.secure_url || !avatar.public_id) {
+    throw new ApiError(400, [], "Failed to upload avatar to cloud");
+  }
   const newUser = await User.create({
     email,
     username: username.toLowerCase(),
     password,
+    avatar: {
+      url: avatar.secure_url,
+      public_id: avatar.public_id,
+    },
+    fullName,
   });
 
   const createdUser = await User.findById(newUser._id)
@@ -144,7 +173,51 @@ const login = asyncHandler(async (req, res) => {
 
 /* UPDATE PROFILE */
 const updateProfile = asyncHandler(async (req, res) => {
-  // will update fullName Avatar
+  const parsedData = updateSchema.safeParse(req.body);
+  if(!parsedData.success){
+   throw new ApiError(401, "Invalid Data format", parsedData.error.issues);
+  }
+
+  const updates=parsedData.data;
+
+  Object.keys(updates).forEach((key)=>{
+    updates[key]=== undefined && delete updates[key]
+  })
+
+  if(updates.email){
+    const exists=await User.findOne({email:updates.email})
+    if(exists && exists._id.toString() !== req.user._id.toString()){
+      return res.status(400).json({message :"An account with this email already exists"})
+    }
+  }
+  if(updates.username){
+    const exists=await User.findOne({username:updates.username})
+    if(exists && exists._id.toString() !== req.user._id.toString()){
+      return res.status(400).json({message : "An account with this username already exists"})
+    }
+  }
+
+  try {
+    const user=await User.findByIdAndUpdate(
+      req.user._id,
+      {
+        $set: updates
+      },
+      {new :true,runValidators:true}
+
+    ).select("-password -refreshToken")
+    if(!user){
+       return res.status(404).json({ message: "User not found" });
+    }
+    return res.status(200)
+    .json( new ApiResponse(200,user,"Account details Updated Successfully"))
+  } catch (error) {
+    if (err.code === 11000) {
+      const field = Object.keys(err.keyValue)[0];
+      return res.status(400).json({ message: `${field} already in use` });
+    }
+    throw err; 
+  }
 });
 const passwordSchema = z.object({
   oldPassword: z.string(),
@@ -161,35 +234,34 @@ const passwordSchema = z.object({
     ),
 });
 const changePassword = asyncHandler(async (req, res) => {
-  const validatedPassword=passwordSchema.safeParse(req.body)
-  if(!validatedPassword.success){
+  const validatedPassword = passwordSchema.safeParse(req.body);
+  if (!validatedPassword.success) {
     return res.status(400).json({
       message: "Invalid password format",
       error: validatedPassword.error.issues,
-    })
+    });
   }
 
-  const {oldPassword, newPassword}=validatedPassword.data
+  const { oldPassword, newPassword } = validatedPassword.data;
 
-  const user=await User.findById(req.user?._id)
-  if(!user){
-    throw new ApiError(404,"User not found")
+  const user = await User.findById(req.user?._id);
+  if (!user) {
+    throw new ApiError(404, "User not found");
   }
-  const isPasswordCorrect=await user.isPasswordCorrect(oldPassword);
-  if(!oldPassword){
-    throw new ApiError(400,"Old password is incorrect")
+  const isPasswordCorrect = await user.isPasswordCorrect(oldPassword);
+  if (!isPasswordCorrect) {
+    throw new ApiError(400, "Old password is incorrect");
   }
 
-  user.password=newPassword;
-  await user.save({validateBeforeSave:false})
+  user.password = newPassword;
+  await user.save({ validateBeforeSave: false });
 
-  return res.status(200)
-  .json( new ApiResponse(200,{},"Password changed successfully"
-  ))
+  return res
+    .status(200)
+    .json(new ApiResponse(200, {}, "Password changed successfully"));
 });
 
 const logout = asyncHandler(async (req, res) => {
-
   await User.findByIdAndUpdate(req.user._id, {
     $unset: { refreshToken: 1 },
   });
@@ -206,44 +278,58 @@ const logout = asyncHandler(async (req, res) => {
     .json(new ApiResponse(200, {}, "User Logged Out"));
 });
 
-
-const refreshAccessToken=asyncHandler(async(req,res)=>{
-try {
-    const incomingRefreshToken=req.cookies.refreshToken || req.body.refreshToken;
-    if(!incomingRefreshToken){
-      throw new ApiError(401,"Unauthorized Access")
+const refreshAccessToken = asyncHandler(async (req, res) => {
+  try {
+    const incomingRefreshToken =
+      req.cookies.refreshToken || req.body.refreshToken;
+    if (!incomingRefreshToken) {
+      throw new ApiError(401, "Unauthorized Access");
     }
-  
-    const decodedToken=await jwt.verify(
+
+    const decodedToken = await jwt.verify(
       incomingRefreshToken,
       process.env.REFRESH_TOKEN_SECRET
-    )
-  
-    const user=await User.findById(decodedToken?._id);
-    if(!user){
-        throw new ApiError(401, "Invalid Refresh Token");
+    );
+
+    const user = await User.findById(decodedToken?._id);
+    if (!user) {
+      throw new ApiError(401, "Invalid Refresh Token");
     }
-    if(incomingRefreshToken !== user?.refreshToken){
-      throw new ApiError(401,"Refresh Token is expired")
+    if (incomingRefreshToken !== user?.refreshToken) {
+      throw new ApiError(401, "Refresh Token is expired");
     }
 
-    const {accessToken,refreshToken}=
-    await generateRefreshAndAccessToken(user._id);
+    const { accessToken, refreshToken } = await generateRefreshAndAccessToken(
+      user._id
+    );
     return res
-    .status(200)
-    .cookie("accessToken",accessToken,cookieOptions)
-    .cookie("refreshToken",refreshToken,cookieOptions)
-    .json(
+      .status(200)
+      .cookie("accessToken", accessToken, cookieOptions)
+      .cookie("refreshToken", refreshToken, cookieOptions)
+      .json(
         new ApiResponse(
           200,
           { accessToken, refreshToken: refreshToken },
           "Access Token Refreshed"
         )
       );
-} catch (error) {
-throw new ApiError(401, "Invalid or expired refresh token");
+  } catch (error) {
+    throw new ApiError(401, "Invalid or expired refresh token");
+  }
+});
 
-}
-})
+const getCurrentUser = asyncHandler(async (req, res) => {
+  return res
+    .status(200)
+    .json(200, req.user, "Current user fetched suucessfully");
+});
 
-export { register, login, updateProfile, logout,changePassword,refreshAccessToken };
+export {
+  register,
+  login,
+  updateProfile,
+  logout,
+  changePassword,
+  refreshAccessToken,
+  getCurrentUser,
+};
