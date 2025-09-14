@@ -5,8 +5,8 @@ import { z } from "zod";
 import { Todo } from "../models/todo.model.js";
 import mongoose from "mongoose";
 const todoUpdateSchema = z.object({
-  title: z.string().min(1).optional(),
-  description: z.string().min(1).optional(),
+  title: z.string().min(1).trim().optional(),
+  description: z.string().trim().min(1).optional(),
   dueDate: z.string().optional(),
   priority: z.enum(["low", "medium", "high"]).optional(),
   status: z.enum(["pending", "completed"]).optional(),
@@ -23,7 +23,7 @@ const todoSchema = z.object({
 });
 const createTodo = asyncHandler(async (req, res) => {
   const validated = todoSchema.safeParse(req.body);
-  if (!validated) {
+  if (!validated.success) {
     const errorDetails = validated.error.issues.map((issue) => ({
       path: issue.path.join("."),
       message: issue.message,
@@ -102,7 +102,6 @@ const getAllTodo = asyncHandler(async (req, res) => {
     .skip(skip)
     .limit(limit)
     .lean();
-
   if (todos.length === 0) {
     throw new ApiError(404, "No todos found");
   }
@@ -155,13 +154,15 @@ const updateTodo = asyncHandler(async (req, res) => {
     if (dueDate && new Date(dueDate) < Date.now()) {
     throw new ApiError(400, "Due date must be in the future");
    }
-   const updatedData = {
+   
+  const updatedData = { 
   ...(title && { title: title.trim() }),
   ...(description && { description: description.trim() }),
   ...(dueDate && { dueDate }),
   ...(priority && { priority }),
-  ...(status && { status }),
+  ...(status && { status }), 
 };
+
 
 const updatedTodo = await Todo.findOneAndUpdate(
   { _id: todoId, user: userId },

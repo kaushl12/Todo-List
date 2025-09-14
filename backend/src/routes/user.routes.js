@@ -5,7 +5,8 @@ import {
   updateProfile,
   logout,
   changePassword,
-  refreshAccessToken
+  refreshAccessToken,
+  updateUserAvatar
 } from "../controllers/user.controller.js";
 
 import { userAuth } from "../middlewares/auth.middleware.js";
@@ -15,6 +16,7 @@ const router = Router();
 
 
 router.route("/register").post(upload.single('avatar'),register)
+router.route("/updateAvatar").patch(userAuth,upload.single('avatar'),updateUserAvatar)
 router.route("/login").post(login)
 router.route("/updateProfile").patch(userAuth,updateProfile)
 router.route("/logout").post(userAuth,logout)

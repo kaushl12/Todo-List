@@ -6,7 +6,7 @@ import { ApiError } from "../utils/ApiError.js";
 import { User } from "../models/user.model.js";
 import {  z } from "zod";
 import jwt from "jsonwebtoken";
-import { uploadOnCloudinary } from "../utils/cloudinary.js";
+import { deleteFromCloudinary, uploadOnCloudinary } from "../utils/cloudinary.js";
 
 
 const registerSchema = z.object({
@@ -103,21 +103,25 @@ const register = asyncHandler(async (req, res) => {
   if (!avatarLocalPath) {
     throw new ApiError(400, "Avatar file is required");
   }
-  const avatar = await uploadOnCloudinary(avatarLocalPath);
-
-  if (!avatar || !avatar.secure_url || !avatar.public_id) {
-    throw new ApiError(400, [], "Failed to upload avatar to cloud");
-  }
+  
   const newUser = await User.create({
     email,
     username: username.toLowerCase(),
     password,
-    avatar: {
-      url: avatar.secure_url,
-      public_id: avatar.public_id,
-    },
     fullName,
   });
+  const uploadedAvatar  = await uploadOnCloudinary(avatarLocalPath, {
+  folder: `user/${newUser._id}/avatar`,
+});
+  if (!uploadedAvatar  || !uploadedAvatar .secure_url || !uploadedAvatar .public_id) {
+    throw new ApiError(400, [], "Failed to upload avatar to cloud");
+  }
+
+   newUser.avatar = {
+    url: uploadedAvatar .secure_url,
+    public_id: uploadedAvatar.public_id,
+  };
+   await newUser.save({ validateBeforeSave: false });
 
   const createdUser = await User.findById(newUser._id)
     .select("-password -refreshToken")
@@ -324,6 +328,54 @@ const getCurrentUser = asyncHandler(async (req, res) => {
     .json(200, req.user, "Current user fetched suucessfully");
 });
 
+const updateUserAvatar=asyncHandler(async(req,res)=>{
+  console.log("Uploaded file:", req.file);
+
+    const avatarLocalPath=req.file?.path
+    const mime=req.file?.mime
+    const size=req.file?.size
+    if(!avatarLocalPath){
+      throw new ApiError(400,"Avatar file is missing")
+    }
+  
+    const MAX_MB = 5;
+
+    if (typeof size === "number" && size > MAX_MB * 1024 * 1024) {
+    try { await fs.unlink(avatarLocalPath); } catch {}
+    throw new ApiError(400, `Image is too large. Max ${MAX_MB} MB.`);
+  }
+   const user=await User.findById(req.user?._id);
+    if(!user){
+      try {
+        await fs.unlink(avatarLocalPath)
+      } catch (error) {}
+     throw new ApiError(401, "Not authenticated.");
+    }
+
+    const avatarUpload= await uploadOnCloudinary(avatarLocalPath, {
+  folder: `user/${req.user._id}/avatar`,   // e.g. user/64abf1c9/avatar
+  resource_type: "image",
+});
+    if(!avatarUpload?.secure_url || !avatarUpload?.public_id){
+      try { await fs.unlink(avatarLocalPath); } catch {}
+       throw new ApiError(400, "Error while uploading new avatar");
+    }
+   
+    if(user.avatar?.public_id){
+      await deleteFromCloudinary(user.avatar?.public_id)
+    }
+    user.avatar={
+      url:avatarUpload.secure_url,
+      public_id:avatarUpload.public_id
+    }
+      await user.save({ validateBeforeSave: false });
+
+  return res
+    .status(200)
+    .json(new ApiResponse(200, user, "Avatar Updated Successfully"));
+})
+
+
 export {
   register,
   login,
@@ -331,5 +383,6 @@ export {
   logout,
   changePassword,
   refreshAccessToken,
+  updateUserAvatar,
   getCurrentUser,
 };
